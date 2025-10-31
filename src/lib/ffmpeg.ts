@@ -20,11 +20,13 @@ export const loadFFmpeg = async (): Promise<FFmpeg> => {
 
   const ffmpeg = new FFmpeg();
   
-  const baseURL = 'https://unpkg.com/@ffmpeg/core@0.12.6/dist/esm';
+  // Use the multi-threaded version of ffmpeg-core for better performance
+  const baseURL = 'https://unpkg.com/@ffmpeg/core-mt@0.12.6/dist/esm';
   
   await ffmpeg.load({
     coreURL: await toBlobURL(`${baseURL}/ffmpeg-core.js`, 'text/javascript'),
     wasmURL: await toBlobURL(`${baseURL}/ffmpeg-core.wasm`, 'application/wasm'),
+    workerURL: await toBlobURL(`${baseURL}/ffmpeg-core.worker.js`, 'text/javascript'),
   });
 
   ffmpeg.on('progress', (progress) => {
