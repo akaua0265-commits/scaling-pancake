@@ -32,25 +32,18 @@ export const detectSilences = async (
   threshold: number
 ): Promise<SilenceSegment[]> => {
   const silences: SilenceSegment[] = [];
-  
-  // Converter threshold de porcentagem (0-100) para dB (-60 a 0)
-  // Quanto menor o threshold %, mais sensível (mais negativo em dB)
-  const thresholdDB = -60 + (threshold * 0.6); // 10% = -54dB, 50% = -30dB
-  
+  const thresholdDB = -60 + (threshold * 0.6);
   let currentSilence: { start: number } | null = null;
-  
-  ffmpeg.on('log', ({ message }) => {
-    // Detectar início do silêncio
+
+  const logCallback = ({ message }: { message: string }) => {
     const silenceStartMatch = message.match(/silence_start: ([\d.]+)/);
     if (silenceStartMatch) {
       currentSilence = { start: parseFloat(silenceStartMatch[1]) };
     }
     
-    // Detectar fim do silêncio
     const silenceEndMatch = message.match(/silence_end: ([\d.]+)/);
     if (silenceEndMatch && currentSilence) {
       const end = parseFloat(silenceEndMatch[1]);
-      // Só adicionar silêncios maiores que 0.5 segundos
       if (end - currentSilence.start > 0.5) {
         silences.push({
           start: currentSilence.start,
@@ -59,15 +52,20 @@ export const detectSilences = async (
       }
       currentSilence = null;
     }
-  });
+  };
 
-  // Executar detecção de silêncios
-  await ffmpeg.exec([
-    '-i', inputFile,
-    '-af', `silencedetect=noise=${thresholdDB}dB:d=0.5`,
-    '-f', 'null',
-    '-'
-  ]);
+  ffmpeg.on('log', logCallback);
+
+  try {
+    await ffmpeg.exec([
+      '-i', inputFile,
+      '-af', `silencedetect=noise=${thresholdDB}dB:d=0.5`,
+      '-f', 'null',
+      '-'
+    ]);
+  } finally {
+    ffmpeg.off('log', logCallback);
+  }
 
   return silences;
 };
@@ -80,14 +78,11 @@ export const removeSilences = async (
   onProgress: (progress: number) => void
 ): Promise<Uint8Array> => {
   if (silences.length === 0) {
-    // Se não há silêncios, retorna o vídeo original
     const data = await ffmpeg.readFile(inputFile);
     return data as Uint8Array;
   }
 
-  // Criar lista de segmentos de áudio/vídeo (partes que NÃO são silêncio)
   const segments: Array<{ start: number; end: number }> = [];
-  
   let lastEnd = 0;
   for (const silence of silences) {
     if (silence.start > lastEnd) {
@@ -96,7 +91,6 @@ export const removeSilences = async (
     lastEnd = silence.end;
   }
   
-  // Adicionar segmento final se houver
   if (lastEnd < duration) {
     segments.push({ start: lastEnd, end: duration });
   }
@@ -105,7 +99,6 @@ export const removeSilences = async (
     throw new Error('Nenhum segmento de áudio válido encontrado');
   }
 
-  // Extrair cada segmento
   const segmentFiles: string[] = [];
   for (let i = 0; i < segments.length; i++) {
     const segment = segments[i];
@@ -120,14 +113,12 @@ export const removeSilences = async (
     ]);
     
     segmentFiles.push(segmentFile);
-    onProgress(((i + 1) / segments.length) * 80); // 80% do progresso
+    onProgress(((i + 1) / segments.length) * 80);
   }
 
-  // Criar arquivo de concatenação
   const concatList = segmentFiles.map(f => `file '${f}'`).join('\n');
   await ffmpeg.writeFile('concat_list.txt', concatList);
 
-  // Concatenar todos os segmentos
   await ffmpeg.exec([
     '-f', 'concat',
     '-safe', '0',
@@ -138,10 +129,8 @@ export const removeSilences = async (
 
   onProgress(100);
 
-  // Ler arquivo final
   const data = await ffmpeg.readFile('output.mp4') as Uint8Array;
 
-  // Limpar arquivos temporários
   for (const file of segmentFiles) {
     try {
       await ffmpeg.deleteFile(file);
@@ -166,7 +155,7 @@ export const getVideoDuration = async (
 ): Promise<number> => {
   let duration = 0;
   
-  ffmpeg.on('log', ({ message }) => {
+  const logCallback = ({ message }: { message: string }) => {
     const durationMatch = message.match(/Duration: (\d{2}):(\d{2}):(\d{2}\.\d{2})/);
     if (durationMatch) {
       const hours = parseInt(durationMatch[1]);
@@ -174,9 +163,15 @@ export const getVideoDuration = async (
       const seconds = parseFloat(durationMatch[3]);
       duration = hours * 3600 + minutes * 60 + seconds;
     }
-  });
+  };
 
-  await ffmpeg.exec(['-i', inputFile, '-f', 'null', '-']);
+  ffmpeg.on('log', logCallback);
+
+  try {
+    await ffmpeg.exec(['-i', inputFile, '-f', 'null', '-']);
+  } finally {
+    ffmpeg.off('log', logCallback);
+  }
   
   return duration;
 };
