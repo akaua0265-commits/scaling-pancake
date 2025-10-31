@@ -21,7 +21,7 @@ export const loadFFmpeg = async (): Promise<FFmpeg> => {
   return ffmpeg;
 };
 
-interface SilenceSegment {
+export interface SilenceSegment {
   start: number;
   end: number;
 }
