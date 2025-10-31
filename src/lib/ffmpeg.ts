@@ -1,7 +1,17 @@
 import { FFmpeg } from '@ffmpeg/ffmpeg';
-import { fetchFile, toBlobURL } from '@ffmpeg/util';
+import { toBlobURL } from '@ffmpeg/util';
 
 let ffmpegInstance: FFmpeg | null = null;
+let progressHandler: ((progress: { progress: number; time: number }) => void) | null = null;
+let logHandler: ((log: { type: string; message: string }) => void) | null = null;
+
+export const setFFmpegProgressHandler = (handler: ((progress: { progress: number; time: number }) => void) | null) => {
+  progressHandler = handler;
+};
+
+export const setFFmpegLogHandler = (handler: ((log: { type: string; message: string }) => void) | null) => {
+  logHandler = handler;
+};
 
 export const loadFFmpeg = async (): Promise<FFmpeg> => {
   if (ffmpegInstance) {
@@ -17,6 +27,18 @@ export const loadFFmpeg = async (): Promise<FFmpeg> => {
     wasmURL: await toBlobURL(`${baseURL}/ffmpeg-core.wasm`, 'application/wasm'),
   });
 
+  ffmpeg.on('progress', (progress) => {
+    if (progressHandler) {
+      progressHandler(progress);
+    }
+  });
+
+  ffmpeg.on('log', (log) => {
+    if (logHandler) {
+      logHandler(log);
+    }
+  });
+
   ffmpegInstance = ffmpeg;
   return ffmpeg;
 };
@@ -26,48 +48,21 @@ export interface SilenceSegment {
   end: number;
 }
 
-export const detectSilences = async (
-  ffmpeg: FFmpeg,
-  inputFile: string,
-  threshold: number
-): Promise<SilenceSegment[]> => {
-  const silences: SilenceSegment[] = [];
+// As funções de detecção e remoção agora são mais simples,
+// pois a lógica de parsing de logs e progresso foi movida para o componente.
+
+export const runDurationAnalysis = (ffmpeg: FFmpeg, inputFile: string) => {
+  return ffmpeg.exec(['-i', inputFile, '-f', 'null', '-']);
+};
+
+export const runSilenceDetection = (ffmpeg: FFmpeg, inputFile: string, threshold: number) => {
   const thresholdDB = -60 + (threshold * 0.6);
-  let currentSilence: { start: number } | null = null;
-
-  const logCallback = ({ message }: { message: string }) => {
-    const silenceStartMatch = message.match(/silence_start: ([\d.]+)/);
-    if (silenceStartMatch) {
-      currentSilence = { start: parseFloat(silenceStartMatch[1]) };
-    }
-    
-    const silenceEndMatch = message.match(/silence_end: ([\d.]+)/);
-    if (silenceEndMatch && currentSilence) {
-      const end = parseFloat(silenceEndMatch[1]);
-      if (end - currentSilence.start > 0.5) {
-        silences.push({
-          start: currentSilence.start,
-          end: end,
-        });
-      }
-      currentSilence = null;
-    }
-  };
-
-  ffmpeg.on('log', logCallback);
-
-  try {
-    await ffmpeg.exec([
-      '-i', inputFile,
-      '-af', `silencedetect=noise=${thresholdDB}dB:d=0.5`,
-      '-f', 'null',
-      '-'
-    ]);
-  } finally {
-    ffmpeg.off('log', logCallback);
-  }
-
-  return silences;
+  return ffmpeg.exec([
+    '-i', inputFile,
+    '-af', `silencedetect=noise=${thresholdDB}dB:d=0.5`,
+    '-f', 'null',
+    '-'
+  ]);
 };
 
 export const removeSilences = async (
@@ -147,31 +142,4 @@ export const removeSilences = async (
   }
 
   return data;
-};
-
-export const getVideoDuration = async (
-  ffmpeg: FFmpeg,
-  inputFile: string
-): Promise<number> => {
-  let duration = 0;
-  
-  const logCallback = ({ message }: { message: string }) => {
-    const durationMatch = message.match(/Duration: (\d{2}):(\d{2}):(\d{2}\.\d{2})/);
-    if (durationMatch) {
-      const hours = parseInt(durationMatch[1]);
-      const minutes = parseInt(durationMatch[2]);
-      const seconds = parseFloat(durationMatch[3]);
-      duration = hours * 3600 + minutes * 60 + seconds;
-    }
-  };
-
-  ffmpeg.on('log', logCallback);
-
-  try {
-    await ffmpeg.exec(['-i', inputFile, '-f', 'null', '-']);
-  } finally {
-    ffmpeg.off('log', logCallback);
-  }
-  
-  return duration;
 };
