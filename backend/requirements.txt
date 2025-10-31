@@ -2,3 +2,4 @@ Flask
 gunicorn
 moviepy
 pydub
+flask-cors
