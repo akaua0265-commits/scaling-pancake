@@ -2,11 +2,8 @@ import { useState } from "react";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Slider } from "@/components/ui/slider";
-import { Progress } from "@/components/ui/progress";
-import { Download, Play, Settings2, Zap, Loader2, Search } from "lucide-react";
+import { Download, Play, Settings2, Zap, Loader2, Wand2 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
-import { loadFFmpeg, removeSilences, runDurationAnalysis, runSilenceDetection, setFFmpegLogHandler, setFFmpegProgressHandler, SilenceSegment } from "@/lib/ffmpeg";
-import { fetchFile } from "@ffmpeg/util";
 
 interface VideoProcessorProps {
   videoFile: File;
@@ -14,122 +11,50 @@ interface VideoProcessorProps {
 }
 
 export const VideoProcessor = ({ videoFile, onReset }: VideoProcessorProps) => {
-  type ProcessingStage = 'idle' | 'analyzing' | 'analyzed' | 'processing' | 'processed';
+  type ProcessingStage = 'idle' | 'processing' | 'processed';
 
   const [stage, setStage] = useState<ProcessingStage>('idle');
   const [threshold, setThreshold] = useState([30]);
-  const [progress, setProgress] = useState(0);
-  const [statusMessage, setStatusMessage] = useState("");
   const [processedUrl, setProcessedUrl] = useState<string | null>(null);
-  const [silenceCount, setSilenceCount] = useState<number>(0);
-  const [timeSaved, setTimeSaved] = useState<number>(0);
-  const [detectedSilences, setDetectedSilences] = useState<SilenceSegment[] | null>(null);
-  const [videoDuration, setVideoDuration] = useState<number>(0);
   const { toast } = useToast();
 
   const videoUrl = URL.createObjectURL(videoFile);
 
-  const handleAnalyze = async () => {
-    setStage('analyzing');
-    setProgress(0);
-    setSilenceCount(0);
-    setTimeSaved(0);
-    setDetectedSilences(null);
-    
+  const handleProcessVideo = async () => {
+    setStage('processing');
+    setProcessedUrl(null);
+
+    const formData = new FormData();
+    formData.append('video', videoFile);
+    formData.append('threshold', threshold[0].toString());
+
     try {
-      setStatusMessage("Carregando processador de vídeo...");
-      const ffmpeg = await loadFFmpeg();
-      setProgress(10);
-
-      setStatusMessage("Carregando vídeo...");
-      const inputData = await fetchFile(videoFile);
-      await ffmpeg.writeFile('input.mp4', inputData);
-      setProgress(20);
-
-      setStatusMessage("Analisando vídeo...");
-      let duration = 0;
-      setFFmpegLogHandler(({ message }) => {
-        const durationMatch = message.match(/Duration: (\d{2}):(\d{2}):(\d{2}\.\d{2})/);
-        if (durationMatch) {
-          const hours = parseInt(durationMatch[1]);
-          const minutes = parseInt(durationMatch[2]);
-          const seconds = parseFloat(durationMatch[3]);
-          duration = hours * 3600 + minutes * 60 + seconds;
-        }
-      });
-      setFFmpegProgressHandler(({ progress }) => setProgress(20 + (progress * 10)));
-      await runDurationAnalysis(ffmpeg, 'input.mp4');
-      setVideoDuration(duration);
-      setProgress(30);
-
-      setStatusMessage("Detectando silêncios...");
-      const silences: SilenceSegment[] = [];
-      let currentSilence: { start: number } | null = null;
-      setFFmpegLogHandler(({ message }) => {
-        const silenceStartMatch = message.match(/silence_start: ([\d.]+)/);
-        if (silenceStartMatch) {
-          currentSilence = { start: parseFloat(silenceStartMatch[1]) };
-        }
-        const silenceEndMatch = message.match(/silence_end: ([\d.]+)/);
-        if (silenceEndMatch && currentSilence) {
-          const end = parseFloat(silenceEndMatch[1]);
-          if (end - currentSilence.start > 0.5) {
-            silences.push({ start: currentSilence.start, end: end });
-          }
-          currentSilence = null;
-        }
-      });
-      setFFmpegProgressHandler(({ progress }) => setProgress(30 + (progress * 70)));
-      await runSilenceDetection(ffmpeg, 'input.mp4', threshold[0]);
-      
-      setDetectedSilences(silences);
-      setSilenceCount(silences.length);
-      const totalSilenceTime = silences.reduce((sum, s) => sum + (s.end - s.start), 0);
-      setTimeSaved(Math.round(totalSilenceTime));
-      
-      setProgress(100);
-      setStatusMessage("Análise concluída!");
-      setStage('analyzed');
-
-      if (silences.length === 0) {
-        toast({ title: "Nenhum silêncio encontrado", description: "Tente ajustar a sensibilidade." });
-      } else {
-        toast({ title: "Análise concluída!", description: `Encontrados ${silences.length} silêncios, totalizando ${Math.round(totalSilenceTime)}s.` });
+      const backendUrl = import.meta.env.VITE_BACKEND_URL;
+      if (!backendUrl) {
+        throw new Error("A URL do backend não está configurada. Por favor, configure VITE_BACKEND_URL no seu arquivo .env");
       }
-    } catch (error) {
-      console.error('Erro ao analisar vídeo:', error);
-      toast({ title: "Erro ao analisar vídeo", description: error instanceof Error ? error.message : "Ocorreu um erro desconhecido", variant: "destructive" });
-      setStage('idle');
-    } finally {
-      setFFmpegLogHandler(null);
-      setFFmpegProgressHandler(null);
-    }
-  };
 
-  const handleRemove = async () => {
-    if (!detectedSilences) return;
+      const response = await fetch(`${backendUrl}/process`, {
+        method: 'POST',
+        body: formData,
+      });
 
-    try {
-      setStage('processing');
-      setProgress(0);
-      setStatusMessage(`Removendo ${silenceCount} silêncios...`);
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.error || `Ocorreu um erro no servidor: ${response.statusText}`);
+      }
 
-      const ffmpeg = await loadFFmpeg();
-      const outputData = await removeSilences(ffmpeg, 'input.mp4', detectedSilences, videoDuration, (p) => setProgress(p));
-      const blob = new Blob([outputData as BlobPart], { type: 'video/mp4' });
+      const blob = await response.blob();
       const url = URL.createObjectURL(blob);
       setProcessedUrl(url);
-
-      setProgress(100);
-      setStatusMessage("Concluído!");
       setStage('processed');
       
-      toast({ title: "Processamento concluído! 🎉", description: `Removidos ${silenceCount} silêncios, economizando ${timeSaved}s` });
+      toast({ title: "Processamento concluído! 🎉", description: "Seu vídeo está pronto para ser baixado." });
 
     } catch (error) {
-      console.error('Erro ao remover silêncios:', error);
-      toast({ title: "Erro ao remover silêncios", description: error instanceof Error ? error.message : "Ocorreu um erro desconhecido", variant: "destructive" });
-      setStage('analyzed');
+      console.error('Erro ao processar vídeo:', error);
+      toast({ title: "Erro ao processar vídeo", description: error instanceof Error ? error.message : "Ocorreu um erro desconhecido", variant: "destructive" });
+      setStage('idle');
     }
   };
 
@@ -141,7 +66,7 @@ export const VideoProcessor = ({ videoFile, onReset }: VideoProcessorProps) => {
     a.click();
   };
 
-  const isBusy = stage === 'analyzing' || stage === 'processing';
+  const isBusy = stage === 'processing';
 
   return (
     <div className="space-y-6 animate-fade-in">
@@ -177,45 +102,20 @@ export const VideoProcessor = ({ videoFile, onReset }: VideoProcessorProps) => {
       </Card>
 
       {stage === 'idle' && (
-        <Button onClick={handleAnalyze} className="w-full h-14 text-lg" size="lg">
-          <Search className="w-5 h-5 mr-2" />
-          Analisar Silêncios
+        <Button onClick={handleProcessVideo} className="w-full h-14 text-lg bg-gradient-primary hover:opacity-90 transition-opacity" size="lg">
+          <Wand2 className="w-5 h-5 mr-2" />
+          Processar Vídeo
         </Button>
       )}
 
       {isBusy && (
         <Card className="p-6">
-          <div className="space-y-3">
-            <div className="flex items-center justify-between text-sm">
-              <span className="font-medium flex items-center">
-                <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                {statusMessage}
-              </span>
-              <span className="text-muted-foreground">{Math.round(progress)}%</span>
-            </div>
-            <Progress value={progress} className="h-2" />
+          <div className="flex flex-col items-center justify-center space-y-3">
+            <Loader2 className="w-8 h-8 animate-spin text-primary" />
+            <span className="font-medium">Processando seu vídeo...</span>
+            <p className="text-sm text-muted-foreground">Isso pode levar alguns minutos.</p>
           </div>
         </Card>
-      )}
-
-      {stage === 'analyzed' && (
-        <>
-          <Card className="p-6 bg-primary/5 border-primary/20 animate-fade-in">
-            <div className="flex items-center justify-between">
-              <div>
-                <h4 className="font-semibold">Análise Concluída</h4>
-                <p className="text-sm text-muted-foreground">
-                  {silenceCount > 0 ? `${silenceCount} silêncios detectados, economizando ~${timeSaved}s.` : "Nenhum silêncio detectado. Tente ajustar a sensibilidade."}
-                </p>
-              </div>
-              <Button variant="ghost" size="sm" onClick={handleAnalyze}>Analisar Novamente</Button>
-            </div>
-          </Card>
-          <Button onClick={handleRemove} disabled={silenceCount === 0} className="w-full h-14 text-lg bg-gradient-primary hover:opacity-90 transition-opacity" size="lg">
-            <Zap className="w-5 h-5 mr-2" />
-            Remover {silenceCount} Silêncios
-          </Button>
-        </>
       )}
 
       {stage === 'processed' && processedUrl && (
@@ -223,7 +123,6 @@ export const VideoProcessor = ({ videoFile, onReset }: VideoProcessorProps) => {
           <div className="flex items-center gap-3 mb-4">
             <Zap className="w-5 h-5 text-accent" />
             <h3 className="text-lg font-semibold">Vídeo Processado</h3>
-            {silenceCount > 0 && <span className="ml-auto text-sm text-muted-foreground">{silenceCount} cortes • {timeSaved}s economizados</span>}
           </div>
           <div className="aspect-video bg-black rounded-lg overflow-hidden mb-4">
             <video src={processedUrl} controls className="w-full h-full" />
